@@ -58,5 +58,35 @@
 - Обработка ошибок LLM (4xx/5xx): повтор на primary, фейловер на backup, очередь задач в `pending_llm_tasks`.
 - Подключение к LLM настраивается через конфиг (`LLM_PRIMARY_URL`, `LLM_BACKUP_URL`, `LLM_TIMEOUT_SECONDS`, и т.д.).
 
+## Бесплатные нейросети для LLM-агента
+
+### Основная (Primary)
+| Сервис | Бесплатный лимит | Как получить ключ |
+|---|---|---|
+| **Groq** | до 14 400 токенов в минуту (модели Llama-3, Mixtral) | groq.com → API Keys → Create API Key |
+| **OpenRouter** | бесплатные модели (llama-3.1-8b, gemma-2 и др.) | openrouter.ai → Keys → Create Key |
+| **Ollama (локально)** | безлимитно (своё железо) | ollama.com → скачать → `ollama run llama3.1` |
+
+### Резервный (Backup)
+| Сервис | Бесплатный лимит | Как получить ключ |
+|---|---|---|
+| **Together AI** | $5 кредитов при регистрации | together.ai → API → API Keys |
+| **OpenRouter** (другая модель) | бесплатные модели | тот же ключ, что и выше |
+| **Ollama (локально)** | безлимитно | второй экземпляр Ollama или другая модель |
+
+### Переменные окружения для .env
+```
+TELEGRAM_BOT_TOKEN=ВАШ_ТОКЕН
+LLM_PRIMARY_URL=https://api.groq.com/openai/v1/chat/completions
+LLM_PRIMARY_KEY=ВАШ_ГРОК_КЛЮЧ
+LLM_BACKUP_URL=https://openrouter.ai/api/v1/chat/completions
+LLM_BACKUP_KEY=ВАШ_ОПЕН_РОУТЕР_КЛЮЧ
+LLM_TIMEOUT_SECONDS=30
+LLM_MAX_RETRIES=2
+LLM_RETRY_DELAY_SEC=2
+```
+
+После добавления ключей в `.env` бот будет полностью функционален.
+
 ## Правила разработки
 - После каждого теста тестовая база данных чистится (удаляются все записи из `expenses` и `pending_llm_tasks` или пересоздаётся файл БД).
