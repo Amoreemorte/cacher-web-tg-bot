@@ -28,12 +28,13 @@ func NewExpenseService(llmClient llm.LLMClient, repo repository.ExpenseRepositor
 	}
 }
 
-// ProcessMessage handles an incoming text message from a user.
-func (s *ExpenseService) ProcessMessage(ctx context.Context, userID int64, text string) (string, error) {
+// ProcessText handles an incoming text message from a user and returns a reply.
+// It can be used both by the Telegram bot and by the pending task processor.
+func (s *ExpenseService) ProcessText(ctx context.Context, userID int64, text string) (string, error) {
 	// 1. Спрашиваем у LLM, что пользователь хочет сделать
 	resp, err := s.llmClient.ProcessText(ctx, userID, text)
 	if err != nil {
-		// LLM недоступен — сохраняем в очередь и отвечаем пользователю
+		// LLM недоступен — сохраняем в очередь
 		_ = s.savePendingTask(ctx, userID, text)
 		return "LLM не отвечает, попробуйте позже", nil
 	}
@@ -51,6 +52,11 @@ func (s *ExpenseService) ProcessMessage(ctx context.Context, userID int64, text 
 	default:
 		return "Не понял запрос. Попробуйте написать иначе (например: «кофе 350»).", nil
 	}
+}
+
+// ProcessMessage handles an incoming text message from a user (Telegram bot entry point).
+func (s *ExpenseService) ProcessMessage(ctx context.Context, userID int64, text string) (string, error) {
+	return s.ProcessText(ctx, userID, text)
 }
 
 func (s *ExpenseService) handleAdd(ctx context.Context, userID int64, resp *llm.LLMResponse) (string, error) {

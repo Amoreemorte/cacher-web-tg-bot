@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"log"
+	"time"
 
 	"expense-bot/config"
 	"expense-bot/internal/bot"
@@ -46,6 +48,17 @@ func main() {
 
 	// Сервис
 	svc := service.NewExpenseService(failover, repo, repo)
+
+	// Процессор отложенных задач (повторная отправка в LLM при недоступности)
+	processor := service.NewPendingTaskProcessor(failover, repo, repo, svc, 5, 30*time.Second)
+
+	// Проверка отложенных задач при старте бота (холодный старт)
+	if err := processor.ProcessPending(context.Background()); err != nil {
+		log.Printf("pending processor initial check error: %v", err)
+	}
+
+	// Фоновая обработка отложенных задач (горячий запуск)
+	go processor.Start(context.Background())
 
 	// Бот
 	b := bot.NewEchoBot(api, cfg.Debug, svc)
