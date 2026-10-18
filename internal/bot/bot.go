@@ -1,9 +1,12 @@
 package bot
 
 import (
+	"context"
 	"log"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"expense-bot/internal/service"
 )
 
 // Sender defines the minimal interface for sending messages.
@@ -23,39 +26,16 @@ type Bot struct {
 	sender   Sender
 	updates  UpdateProvider
 	debug    bool
-	handler  Handler
-}
-
-// Handler processes an incoming update and returns a reply text.
-// Empty reply means no message should be sent.
-type Handler interface {
-	Handle(update tgbotapi.Update) (reply string, err error)
-}
-
-// echoHandler implements Handler: it echoes text messages and
-// replies with a fallback message for non-text updates.
-type echoHandler struct{}
-
-func (h echoHandler) Handle(update tgbotapi.Update) (string, error) {
-	if update.Message == nil {
-		return "", nil
-	}
-
-	if update.Message.Text == "" {
-		return "Не получил задание, отправьте ещё раз", nil
-	}
-
-	log.Printf("Получено сообщение от пользователя %d: %s", update.Message.From.ID, update.Message.Text)
-	return update.Message.Text, nil
+	service  *service.ExpenseService
 }
 
 // New creates a Bot with the given dependencies.
-func New(sender Sender, updates UpdateProvider, debug bool, handler Handler) *Bot {
+func New(sender Sender, updates UpdateProvider, debug bool, svc *service.ExpenseService) *Bot {
 	return &Bot{
 		sender:   sender,
 		updates:  updates,
 		debug:    debug,
-		handler:  handler,
+		service:  svc,
 	}
 }
 
@@ -67,23 +47,31 @@ func (b *Bot) Run() error {
 	updates := b.updates.GetUpdatesChan(u)
 
 	for update := range updates {
-		reply, err := b.handler.Handle(update)
-		if err != nil {
-			if b.debug {
-				log.Printf("handler error: %v", err)
+		if update.Message == nil {
+			continue
+		}
+
+		if update.Message.Text == "" {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Не получил задание, отправьте ещё раз")
+			if _, sendErr := b.sender.Send(msg); sendErr != nil && b.debug {
+				log.Printf("send error: %v", sendErr)
 			}
 			continue
 		}
 
-		if reply == "" {
-			continue
+		log.Printf("Получено сообщение от пользователя %d: %s", update.Message.From.ID, update.Message.Text)
+
+		reply, err := b.service.ProcessMessage(context.Background(), update.Message.From.ID, update.Message.Text)
+		if err != nil {
+			if b.debug {
+				log.Printf("service error: %v", err)
+			}
+			reply = "Произошла внутренняя ошибка. Попробуйте позже."
 		}
 
 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, reply)
-		if _, sendErr := b.sender.Send(msg); sendErr != nil {
-			if b.debug {
-				log.Printf("send error: %v", sendErr)
-			}
+		if _, sendErr := b.sender.Send(msg); sendErr != nil && b.debug {
+			log.Printf("send error: %v", sendErr)
 		}
 	}
 
@@ -92,8 +80,8 @@ func (b *Bot) Run() error {
 
 // NewEchoBot creates a fully configured echo bot from the API object.
 // It wraps tgbotapi.BotAPI into the Sender and UpdateProvider interfaces.
-func NewEchoBot(api *tgbotapi.BotAPI, debug bool) *Bot {
-	return New(api, api, debug, echoHandler{})
+func NewEchoBot(api *tgbotapi.BotAPI, debug bool, svc *service.ExpenseService) *Bot {
+	return New(api, api, debug, svc)
 }
 
 // Compile-time check that tgbotapi.BotAPI implements Sender and UpdateProvider.

@@ -59,6 +59,16 @@ func createSchema(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_expenses_user_id ON expenses(user_id);
 	CREATE INDEX IF NOT EXISTS idx_expenses_spent_at ON expenses(spent_at);
 	CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
+
+	CREATE TABLE IF NOT EXISTS pending_llm_tasks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL,
+		raw_text TEXT NOT NULL,
+		attempts INTEGER NOT NULL DEFAULT 0,
+		next_attempt_at TEXT NOT NULL,
+		created_at TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_pending_llm_tasks_next_attempt ON pending_llm_tasks(next_attempt_at);
 	`
 	_, err := db.Exec(schema)
 	return err
@@ -242,4 +252,114 @@ func scanRow(scanner interface {
 	}
 
 	return &e, nil
+}
+
+var _ repository.PendingTaskRepository = (*SQLiteRepository)(nil)
+
+// CreatePendingTask сохраняет отложенную задачу для повторной отправки в LLM.
+func (r *SQLiteRepository) CreatePendingTask(ctx context.Context, task *repository.PendingTask) error {
+	query := `
+		INSERT INTO pending_llm_tasks (user_id, raw_text, attempts, next_attempt_at, created_at)
+		VALUES (?, ?, ?, ?, ?)
+	`
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := r.db.ExecContext(ctx, query,
+		task.UserID,
+		task.RawText,
+		task.Attempts,
+		task.NextAttempt.UTC().Format(time.RFC3339),
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("insert pending task: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("get last insert id: %w", err)
+	}
+	task.ID = id
+	return nil
+}
+
+// ListDuePendingTasks возвращает задачи, время следующей попытки которых наступило.
+func (r *SQLiteRepository) ListDuePendingTasks(ctx context.Context, before time.Time) ([]*repository.PendingTask, error) {
+	query := `
+		SELECT id, user_id, raw_text, attempts, next_attempt_at, created_at
+		FROM pending_llm_tasks
+		WHERE next_attempt_at <= ?
+		ORDER BY next_attempt_at ASC
+	`
+	rows, err := r.db.QueryContext(ctx, query, before.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, fmt.Errorf("query due pending tasks: %w", err)
+	}
+	defer rows.Close()
+	return scanPendingTasks(rows)
+}
+
+// UpdatePendingTaskAttempts обновляет количество попыток и время следующей попытки.
+func (r *SQLiteRepository) UpdatePendingTaskAttempts(ctx context.Context, id int64, attempts int, nextAttempt time.Time) error {
+	query := `
+		UPDATE pending_llm_tasks
+		SET attempts = ?, next_attempt_at = ?
+		WHERE id = ?
+	`
+	_, err := r.db.ExecContext(ctx, query, attempts, nextAttempt.UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return fmt.Errorf("update pending task attempts: %w", err)
+	}
+	return nil
+}
+
+// DeletePendingTask удаляет отложенную задачу по ID.
+func (r *SQLiteRepository) DeletePendingTask(ctx context.Context, id int64) error {
+	query := `DELETE FROM pending_llm_tasks WHERE id = ?`
+	_, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("delete pending task: %w", err)
+	}
+	return nil
+}
+
+func scanPendingTask(row *sql.Row) (*repository.PendingTask, error) {
+	return scanPendingRow(row)
+}
+
+func scanPendingTasks(rows *sql.Rows) ([]*repository.PendingTask, error) {
+	var tasks []*repository.PendingTask
+	for rows.Next() {
+		t, err := scanPendingRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan pending task row: %w", err)
+		}
+		tasks = append(tasks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending tasks: %w", err)
+	}
+	return tasks, nil
+}
+
+func scanPendingRow(scanner interface {
+	Scan(...interface{}) error
+}) (*repository.PendingTask, error) {
+	var t repository.PendingTask
+	var nextAttempt, createdAt string
+
+	err := scanner.Scan(&t.ID, &t.UserID, &t.RawText, &t.Attempts, &nextAttempt, &createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("scan pending: %w", err)
+	}
+
+	t.NextAttempt, err = time.Parse(time.RFC3339, nextAttempt)
+	if err != nil {
+		return nil, fmt.Errorf("parse next_attempt_at: %w", err)
+	}
+	t.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("parse created_at: %w", err)
+	}
+
+	return &t, nil
 }
