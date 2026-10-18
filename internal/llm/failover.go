@@ -42,6 +42,9 @@ func (f *FailoverClient) ProcessText(ctx context.Context, userID int64, text str
 
 		resp, err := f.primary.ProcessText(ctx, userID, text)
 		if err == nil {
+			if i > 0 {
+				log.Printf("primary LLM succeeded on attempt %d", i+1)
+			}
 			return resp, nil
 		}
 		lastErr = err

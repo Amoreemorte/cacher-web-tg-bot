@@ -58,6 +58,8 @@
 - Обработка ошибок LLM (4xx/5xx): повтор на primary, фейловер на backup, очередь задач в `pending_llm_tasks`.
 - Подключение к LLM настраивается через конфиг (`LLM_PRIMARY_URL`, `LLM_BACKUP_URL`, `LLM_TIMEOUT_SECONDS`, и т.д.).
 - **Формат взаимодействия с LLM**: OpenAI-совместимый Chat Completions API (`/v1/chat/completions`) — работает с Groq, OpenRouter, Together AI, Ollama и любыми другими совместимыми провайдерами. Клиент отправляет system-prompt с инструкцией возвращать строгий JSON и user-сообщение, парсит `choices[0].message.content`, извлекает JSON (включая markdown-обёртку ```json ... ```).
+- **Ограничение `max_tokens`** (`LLM_MAX_TOKENS`, по умолчанию 512): Groq считает лимит OTPM по ожидаемым output-токенам запроса — без ограничения возможен 429 даже при коротком ответе.
+- **Время траты**: для add без указания даты LLM возвращает текущее время; как страховка полночь сегодняшнего дня в `handleAdd` заменяется на `time.Now()`.
 
 ## Бесплатные нейросети для LLM-агента
 
@@ -87,6 +89,7 @@ LLM_BACKUP_MODEL=meta-llama/llama-3.3-70b-instruct:free
 LLM_TIMEOUT_SECONDS=30
 LLM_MAX_RETRIES=2
 LLM_RETRY_DELAY_SEC=2
+LLM_MAX_TOKENS=512
 ```
 
 После добавления ключей в `.env` бот будет полностью функционален.

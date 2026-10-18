@@ -19,14 +19,20 @@ const systemPrompt = `Ты — ассистент учёта семейных р
   "user_id": число (передаётся в запросе, повтори его как есть),
   "amount": число (сумма траты, для add/update; для list/delete можно 0),
   "category": строка из списка: "еда", "транспорт", "жильё", "развлечения", "здоровье", "покупки", "другое",
-  "spent_at": строка в формате RFC3339 (например "2026-10-18T10:00:00Z"); для "вчера" вычисли вчерашнюю дату, для "сегодня" — сегодняшнюю, для "в этом месяце" — начало текущего месяца, для "за неделю" — начало текущей недели,
+  "spent_at": строка в формате RFC3339 с точностью до секунд (например "2026-10-18T22:26:00+03:00"):
+    - для add БЕЗ указания даты в запросе — верни ТЕКУЩИЕ дату и время (не полночь!);
+    - для add с «сегодня» — ТЕКУЩИЕ дату и время;
+    - для «вчера» — вчерашняя дата (время можно любое);
+    - для «в этом месяце» (list) — начало текущего месяца;
+    - для «за неделю» (list) — начало текущей недели;
+    - для update/delete без даты — пустая строка "",
   "comment": строка (необязательный комментарий или пустая строка),
   "expense_id": число или null (ID существующей траты для update/delete, если пользователь ссылается на конкретную трату)
 }
 
 Примеры:
-- «кофе 350» → {"action":"add","user_id":123,"amount":350,"category":"еда","spent_at":"2026-10-18T00:00:00Z","comment":"кофе","expense_id":null}
-- «такси 1200 вчера» → {"action":"add","user_id":123,"amount":1200,"category":"транспорт","spent_at":"2026-10-17T00:00:00Z","comment":"такси","expense_id":null}
+- «кофе 350» → {"action":"add","user_id":123,"amount":350,"category":"еда","spent_at":"2026-10-18T22:26:00+03:00","comment":"кофе","expense_id":null}
+- «такси 1200 вчера» → {"action":"add","user_id":123,"amount":1200,"category":"транспорт","spent_at":"2026-10-17T18:00:00+03:00","comment":"такси","expense_id":null}
 - «покажи траты на еду в этом месяце» → {"action":"list","user_id":123,"amount":0,"category":"еда","spent_at":"2026-10-01T00:00:00Z","comment":"","expense_id":null}
 - «последнее было не 350, а 450» → {"action":"update","user_id":123,"amount":450,"category":"еда","spent_at":"","comment":"","expense_id":42}
 - «удали такси» → {"action":"delete","user_id":123,"amount":0,"category":"транспорт","spent_at":"","comment":"","expense_id":42}
@@ -35,19 +41,27 @@ const systemPrompt = `Ты — ассистент учёта семейных р
 
 // HTTPClient реализует LLMClient через OpenAI-совместимый Chat Completions API.
 type HTTPClient struct {
-	client *http.Client
-	url    string
-	apiKey string
-	model  string
+	client    *http.Client
+	url       string
+	apiKey    string
+	model     string
+	maxTokens int
 }
 
 // NewHTTPClient создаёт HTTP-клиент для LLM в формате OpenAI Chat Completions.
-func NewHTTPClient(url, apiKey, model string, timeout time.Duration) *HTTPClient {
+// maxTokens ограничивает размер ответа — важно для провайдеров с лимитом
+// output-токенов в минуту (например, Groq OTPM): незаданный max_tokens
+// может приводить к 429 даже при коротком фактическом ответе.
+func NewHTTPClient(url, apiKey, model string, maxTokens int, timeout time.Duration) *HTTPClient {
+	if maxTokens <= 0 {
+		maxTokens = 512
+	}
 	return &HTTPClient{
-		client: &http.Client{Timeout: timeout},
-		url:    url,
-		apiKey: apiKey,
-		model:  model,
+		client:    &http.Client{Timeout: timeout},
+		url:       url,
+		apiKey:    apiKey,
+		model:     model,
+		maxTokens: maxTokens,
 	}
 }
 
@@ -62,6 +76,7 @@ type chatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
 	Temperature float64       `json:"temperature"`
+	MaxTokens   int           `json:"max_tokens"`
 }
 
 // chatChoice — один вариант ответа.
@@ -93,6 +108,7 @@ func (c *HTTPClient) ProcessText(ctx context.Context, userID int64, text string)
 			{Role: "user", Content: userContent},
 		},
 		Temperature: 0.1,
+		MaxTokens:   c.maxTokens,
 	}
 
 	data, err := json.Marshal(reqBody)

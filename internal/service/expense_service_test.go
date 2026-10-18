@@ -289,3 +289,39 @@ func TestExpenseService_UnknownAction(t *testing.T) {
 	}
 	_ = mockLLM
 }
+
+func TestExpenseService_AddExpense_MidnightFallbackToNow(t *testing.T) {
+	ctx := context.Background()
+	svc, mockLLM, cleanup := newTestService(t)
+	defer cleanup()
+	userID := int64(12345)
+
+	// LLM прислала полночь сегодняшнего дня (ошибка модели для «сегодня»)
+	now := time.Now()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	mockLLM.Response = &llm.LLMResponse{
+		Action:   "add",
+		Amount:   350,
+		Category: "еда",
+		SpentAt:  midnight.Format(time.RFC3339),
+		Comment:  "семечки",
+	}
+
+	if _, err := svc.ProcessMessage(ctx, userID, "семечки 350"); err != nil {
+		t.Fatalf("ProcessMessage failed: %v", err)
+	}
+
+	expenses, err := svc.repo.GetByUserID(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetByUserID failed: %v", err)
+	}
+	if len(expenses) != 1 {
+		t.Fatalf("expected 1 expense, got %d", len(expenses))
+	}
+
+	got := expenses[0].SpentAt
+	if got.Hour() == 0 && got.Minute() == 0 && got.Second() == 0 {
+		t.Errorf("spent_at should be replaced with current time, got midnight %v", got)
+	}
+}

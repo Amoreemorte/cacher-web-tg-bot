@@ -29,6 +29,9 @@ func TestHTTPClient_ProcessText_Success(t *testing.T) {
 		if req.Model != "test-model" {
 			t.Errorf("expected model test-model, got %s", req.Model)
 		}
+		if req.MaxTokens != 512 {
+			t.Errorf("expected max_tokens 512, got %d", req.MaxTokens)
+		}
 		if len(req.Messages) != 2 {
 			t.Errorf("expected 2 messages, got %d", len(req.Messages))
 		}
@@ -55,7 +58,7 @@ func TestHTTPClient_ProcessText_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "test-key", "test-model", 5*time.Second)
+	client := NewHTTPClient(server.URL, "test-key", "test-model", 512, 5*time.Second)
 
 	resp, err := client.ProcessText(context.Background(), 12345, "кофе 350")
 	if err != nil {
@@ -93,7 +96,7 @@ func TestHTTPClient_ProcessText_MarkdownWrapped(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "", "test-model", 5*time.Second)
+	client := NewHTTPClient(server.URL, "", "test-model", 512, 5*time.Second)
 
 	resp, err := client.ProcessText(context.Background(), 1, "удали такси")
 	if err != nil {
@@ -114,7 +117,7 @@ func TestHTTPClient_ProcessText_ServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(server.URL, "", "test-model", 5*time.Second)
+	client := NewHTTPClient(server.URL, "", "test-model", 512, 5*time.Second)
 
 	_, err := client.ProcessText(context.Background(), 1, "кофе 350")
 	if err == nil {

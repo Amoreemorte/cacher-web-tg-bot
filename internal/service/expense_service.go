@@ -71,7 +71,15 @@ func (s *ExpenseService) handleAdd(ctx context.Context, userID int64, resp *llm.
 	if resp.SpentAt != "" {
 		t, err := time.Parse(time.RFC3339, resp.SpentAt)
 		if err == nil {
-			expense.SpentAt = t
+			// Страховка: если LLM прислала полночь сегодняшнего дня (частая
+			// ошибка моделей для «сегодня»/без даты), заменяем на текущее время.
+			now := time.Now()
+			if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 &&
+				t.Year() == now.Year() && t.Month() == now.Month() && t.Day() == now.Day() {
+				expense.SpentAt = now
+			} else {
+				expense.SpentAt = t
+			}
 		} else {
 			expense.SpentAt = time.Now().UTC()
 		}

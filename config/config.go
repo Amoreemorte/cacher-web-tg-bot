@@ -21,6 +21,7 @@ type Config struct {
 	LLMTimeoutSeconds  int
 	LLMMaxRetries      int
 	LLMRetryDelaySec   int
+	LLMMaxTokens       int
 }
 
 // Load загружает конфигурацию из переменных окружения.
@@ -58,6 +59,13 @@ func Load() (*Config, error) {
 		}
 	}
 
+	maxTokens := 512
+	if v := os.Getenv("LLM_MAX_TOKENS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			maxTokens = parsed
+		}
+	}
+
 	return &Config{
 		TelegramBotToken:   token,
 		Debug:              debug,
@@ -70,6 +78,7 @@ func Load() (*Config, error) {
 		LLMTimeoutSeconds:  timeout,
 		LLMMaxRetries:      maxRetries,
 		LLMRetryDelaySec:   retryDelay,
+		LLMMaxTokens:       maxTokens,
 	}, nil
 }
 
