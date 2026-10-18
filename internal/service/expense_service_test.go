@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -323,5 +324,84 @@ func TestExpenseService_AddExpense_MidnightFallbackToNow(t *testing.T) {
 	got := expenses[0].SpentAt
 	if got.Hour() == 0 && got.Minute() == 0 && got.Second() == 0 {
 		t.Errorf("spent_at should be replaced with current time, got midnight %v", got)
+	}
+}
+
+func TestExpenseService_AddExpense_OldDateClamped(t *testing.T) {
+	ctx := context.Background()
+	svc, mockLLM, cleanup := newTestService(t)
+	defer cleanup()
+	userID := int64(12345)
+
+	// LLM галлюцинировала дату полтора года назад (как в переписке: 23.05.2024)
+	mockLLM.Response = &llm.LLMResponse{
+		Action:   "add",
+		Amount:   350,
+		Category: "еда",
+		SpentAt:  "2024-05-23T12:00:00Z",
+		Comment:  "семечки",
+	}
+
+	if _, err := svc.ProcessMessage(ctx, userID, "семечки 350"); err != nil {
+		t.Fatalf("ProcessMessage failed: %v", err)
+	}
+
+	expenses, err := svc.repo.GetByUserID(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetByUserID failed: %v", err)
+	}
+	if len(expenses) != 1 {
+		t.Fatalf("expected 1 expense, got %d", len(expenses))
+	}
+
+	got := expenses[0].SpentAt
+	if time.Since(got) > time.Minute {
+		t.Errorf("spent_at should be clamped to now, got %v (clamped from 2024)", got)
+	}
+}
+
+func TestExpenseService_DeletePassesRecentExpensesContext(t *testing.T) {
+	ctx := context.Background()
+	svc, mockLLM, cleanup := newTestService(t)
+	defer cleanup()
+	userID := int64(12345)
+
+	// В БД уже есть трата
+	expense := &domain.Expense{
+		UserID:    userID,
+		Amount:    350,
+		Category:  "еда",
+		SpentAt:   time.Now().UTC(),
+		Comment:   "семечки",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := svc.repo.Create(ctx, expense); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Модель выбирает expense_id из переданного контекста
+	expenseID := expense.ID
+	mockLLM.Response = &llm.LLMResponse{
+		Action:    "delete",
+		ExpenseID: &expenseID,
+	}
+
+	if _, err := svc.ProcessMessage(ctx, userID, "удали семечки"); err != nil {
+		t.Fatalf("ProcessMessage failed: %v", err)
+	}
+
+	// LLM должен получить список последних трат с id
+	if !strings.Contains(mockLLM.LastText, "Последние траты") || !strings.Contains(mockLLM.LastText, "id=") {
+		t.Errorf("LLM text should contain recent expenses block with ids, got: %q", mockLLM.LastText)
+	}
+
+	// Трата удалена
+	got, err := svc.repo.GetByID(ctx, expenseID)
+	if err != nil {
+		t.Fatalf("GetByID failed: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected expense to be deleted, got ID %d", got.ID)
 	}
 }

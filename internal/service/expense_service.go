@@ -30,16 +30,20 @@ func NewExpenseService(llmClient llm.LLMClient, repo repository.ExpenseRepositor
 
 // ProcessText handles an incoming text message from a user and returns a reply.
 // It can be used both by the Telegram bot and by the pending task processor.
-func (s *ExpenseService) ProcessText(ctx context.Context, userID int64, text string) (string, error) {
-	// 1. Спрашиваем у LLM, что пользователь хочет сделать
-	resp, err := s.llmClient.ProcessText(ctx, userID, text)
+func (s *ExpenseService) ProcessText(ctx context.Context, userID int64, rawText string) (string, error) {
+	// 1. Обогащаем запрос списком последних трат — LLM нужен expense_id
+	// для update/delete, а самого он взять негде (нет доступа к БД).
+	llmText := s.withRecentExpenses(ctx, userID, rawText)
+
+	// 2. Спрашиваем у LLM, что пользователь хочет сделать
+	resp, err := s.llmClient.ProcessText(ctx, userID, llmText)
 	if err != nil {
-		// LLM недоступен — сохраняем в очередь
-		_ = s.savePendingTask(ctx, userID, text)
+		// LLM недоступен — сохраняем в очередь исходный текст (без обогащения)
+		_ = s.savePendingTask(ctx, userID, rawText)
 		return "LLM не отвечает, попробуйте позже", nil
 	}
 
-	// 2. Выполняем действие в зависимости от ответа LLM
+	// 3. Выполняем действие в зависимости от ответа LLM
 	switch resp.Action {
 	case "add":
 		return s.handleAdd(ctx, userID, resp)
@@ -52,6 +56,45 @@ func (s *ExpenseService) ProcessText(ctx context.Context, userID int64, text str
 	default:
 		return "Не понял запрос. Попробуйте написать иначе (например: «кофе 350»).", nil
 	}
+}
+
+// withRecentExpenses добавляет к запросу список последних трат пользователя
+// (максимум 10, самых новых), чтобы LLM могла выбрать expense_id для
+// update/delete. Если трат нет — возвращает исходный текст без изменений.
+func (s *ExpenseService) withRecentExpenses(ctx context.Context, userID int64, rawText string) string {
+	filter := domain.ExpenseFilter{UserID: &userID, Limit: 10}
+	expenses, err := s.repo.GetAll(ctx, filter)
+	if err != nil || len(expenses) == 0 {
+		return rawText
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Последние траты пользователя (выбирай expense_id ТОЛЬКО из этого списка; первая строка — самая новая):\n")
+	for _, e := range expenses {
+		fmt.Fprintf(&sb, "- id=%d | %.2f | %s | %s | %s\n",
+			e.ID, e.Amount, e.Category, e.SpentAt.Format("2006-01-02"), e.Comment)
+	}
+	sb.WriteString("\nЗапрос пользователя: ")
+	sb.WriteString(rawText)
+	return sb.String()
+}
+
+// resolveSpentAt возвращает правдоподобное время траты, защищая от
+// галлюцинаций даты у LLM:
+//   - полночь сегодняшнего дня (частая ошибка для «сегодня»/без даты) → now;
+//   - дата вне разумного окна (больше года назад или позже конца завтрашнего
+//     дня) → now;
+//   - остальное (вчера, начало месяца и т.п.) → как прислала LLM.
+func resolveSpentAt(t, now time.Time) time.Time {
+	if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 &&
+		t.Year() == now.Year() && t.Month() == now.Month() && t.Day() == now.Day() {
+		return now
+	}
+	if t.Before(now.AddDate(-1, 0, 0)) || t.After(now.AddDate(0, 0, 1)) {
+		log.Printf("LLM returned implausible spent_at %s, using current time", t.Format(time.RFC3339))
+		return now
+	}
+	return t
 }
 
 // ProcessMessage handles an incoming text message from a user (Telegram bot entry point).
@@ -67,19 +110,11 @@ func (s *ExpenseService) handleAdd(ctx context.Context, userID int64, resp *llm.
 		Comment:  resp.Comment,
 	}
 
-	// Парсим spent_at
+	// Парсим spent_at с защитой от галлюцинаций даты у LLM
 	if resp.SpentAt != "" {
 		t, err := time.Parse(time.RFC3339, resp.SpentAt)
 		if err == nil {
-			// Страховка: если LLM прислала полночь сегодняшнего дня (частая
-			// ошибка моделей для «сегодня»/без даты), заменяем на текущее время.
-			now := time.Now()
-			if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 &&
-				t.Year() == now.Year() && t.Month() == now.Month() && t.Day() == now.Day() {
-				expense.SpentAt = now
-			} else {
-				expense.SpentAt = t
-			}
+			expense.SpentAt = resolveSpentAt(t, time.Now())
 		} else {
 			expense.SpentAt = time.Now().UTC()
 		}
@@ -121,7 +156,7 @@ func (s *ExpenseService) handleUpdate(ctx context.Context, userID int64, resp *l
 	}
 	if resp.SpentAt != "" {
 		if t, err := time.Parse(time.RFC3339, resp.SpentAt); err == nil {
-			expense.SpentAt = t
+			expense.SpentAt = resolveSpentAt(t, time.Now())
 		}
 	}
 
