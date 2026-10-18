@@ -57,6 +57,7 @@
 - JSON-структура ответа от LLM: `action`, `user_id`, `amount`, `category`, `spent_at`, `comment`, `expense_id`.
 - Обработка ошибок LLM (4xx/5xx): повтор на primary, фейловер на backup, очередь задач в `pending_llm_tasks`.
 - Подключение к LLM настраивается через конфиг (`LLM_PRIMARY_URL`, `LLM_BACKUP_URL`, `LLM_TIMEOUT_SECONDS`, и т.д.).
+- **Формат взаимодействия с LLM**: OpenAI-совместимый Chat Completions API (`/v1/chat/completions`) — работает с Groq, OpenRouter, Together AI, Ollama и любыми другими совместимыми провайдерами. Клиент отправляет system-prompt с инструкцией возвращать строгий JSON и user-сообщение, парсит `choices[0].message.content`, извлекает JSON (включая markdown-обёртку ```json ... ```).
 
 ## Бесплатные нейросети для LLM-агента
 
@@ -79,8 +80,10 @@
 TELEGRAM_BOT_TOKEN=ВАШ_ТОКЕН
 LLM_PRIMARY_URL=https://api.groq.com/openai/v1/chat/completions
 LLM_PRIMARY_KEY=ВАШ_ГРОК_КЛЮЧ
+LLM_PRIMARY_MODEL=llama-3.3-70b-versatile
 LLM_BACKUP_URL=https://openrouter.ai/api/v1/chat/completions
 LLM_BACKUP_KEY=ВАШ_ОПЕН_РОУТЕР_КЛЮЧ
+LLM_BACKUP_MODEL=meta-llama/llama-3.3-70b-instruct:free
 LLM_TIMEOUT_SECONDS=30
 LLM_MAX_RETRIES=2
 LLM_RETRY_DELAY_SEC=2
@@ -104,9 +107,11 @@ LLM_RETRY_DELAY_SEC=2
 $env:TELEGRAM_BOT_TOKEN="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 $env:LLM_PRIMARY_URL="https://api.groq.com/openai/v1/chat/completions"
 $env:LLM_PRIMARY_KEY="ВАШ_GROQ_API_KEY"
+$env:LLM_PRIMARY_MODEL="llama-3.3-70b-versatile"
 # Опционально: резервный LLM
 # $env:LLM_BACKUP_URL="https://openrouter.ai/api/v1/chat/completions"
 # $env:LLM_BACKUP_KEY="ВАШ_OPENROUTER_API_KEY"
+# $env:LLM_BACKUP_MODEL="meta-llama/llama-3.3-70b-instruct:free"
 go run ./cmd/bot
 ```
 

@@ -36,11 +36,11 @@ func main() {
 	}
 	defer repo.Close()
 
-	// LLM клиенты
-	primary := llm.NewHTTPClient(cfg.LLMPrimaryURL, cfg.LLMPrimaryKey, cfg.LLMTimeout())
+	// LLM клиенты (OpenAI-совместимый Chat Completions API)
+	primary := llm.NewHTTPClient(cfg.LLMPrimaryURL, cfg.LLMPrimaryKey, cfg.LLMPrimaryModel, cfg.LLMTimeout())
 	var backup llm.LLMClient
 	if cfg.LLMBackupURL != "" {
-		backup = llm.NewHTTPClient(cfg.LLMBackupURL, cfg.LLMBackupKey, cfg.LLMTimeout())
+		backup = llm.NewHTTPClient(cfg.LLMBackupURL, cfg.LLMBackupKey, cfg.LLMBackupModel, cfg.LLMTimeout())
 	}
 
 	// Фейловер LLM

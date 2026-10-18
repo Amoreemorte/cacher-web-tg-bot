@@ -14,8 +14,10 @@ type Config struct {
 	// LLM настройки
 	LLMPrimaryURL      string
 	LLMPrimaryKey      string
+	LLMPrimaryModel    string
 	LLMBackupURL       string
 	LLMBackupKey       string
+	LLMBackupModel     string
 	LLMTimeoutSeconds  int
 	LLMMaxRetries      int
 	LLMRetryDelaySec   int
@@ -61,8 +63,10 @@ func Load() (*Config, error) {
 		Debug:              debug,
 		LLMPrimaryURL:      os.Getenv("LLM_PRIMARY_URL"),
 		LLMPrimaryKey:      os.Getenv("LLM_PRIMARY_KEY"),
+		LLMPrimaryModel:    os.Getenv("LLM_PRIMARY_MODEL"),
 		LLMBackupURL:       os.Getenv("LLM_BACKUP_URL"),
 		LLMBackupKey:       os.Getenv("LLM_BACKUP_KEY"),
+		LLMBackupModel:     os.Getenv("LLM_BACKUP_MODEL"),
 		LLMTimeoutSeconds:  timeout,
 		LLMMaxRetries:      maxRetries,
 		LLMRetryDelaySec:   retryDelay,

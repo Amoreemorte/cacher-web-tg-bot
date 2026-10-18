@@ -7,35 +7,95 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
-// HTTPClient реализует LLMClient через HTTP-запросы к произвольному эндпоинту.
-type HTTPClient struct {
-	client  *http.Client
-	url     string
-	apiKey  string
+const systemPrompt = `Ты — ассистент учёта семейных расходов. Пользователь пишет тебе запрос на русском языке. Твоя задача — определить действие и вернуть СТРОГО JSON без markdown-обёртки, без пояснений, только JSON.
+
+Формат ответа (все поля обязательны, кроме expense_id и comment):
+{
+  "action": "add" | "update" | "delete" | "list",
+  "user_id": число (передаётся в запросе, повтори его как есть),
+  "amount": число (сумма траты, для add/update; для list/delete можно 0),
+  "category": строка из списка: "еда", "транспорт", "жильё", "развлечения", "здоровье", "покупки", "другое",
+  "spent_at": строка в формате RFC3339 (например "2026-10-18T10:00:00Z"); для "вчера" вычисли вчерашнюю дату, для "сегодня" — сегодняшнюю, для "в этом месяце" — начало текущего месяца, для "за неделю" — начало текущей недели,
+  "comment": строка (необязательный комментарий или пустая строка),
+  "expense_id": число или null (ID существующей траты для update/delete, если пользователь ссылается на конкретную трату)
 }
 
-// NewHTTPClient создаёт HTTP-клиент для LLM.
-func NewHTTPClient(url, apiKey string, timeout time.Duration) *HTTPClient {
+Примеры:
+- «кофе 350» → {"action":"add","user_id":123,"amount":350,"category":"еда","spent_at":"2026-10-18T00:00:00Z","comment":"кофе","expense_id":null}
+- «такси 1200 вчера» → {"action":"add","user_id":123,"amount":1200,"category":"транспорт","spent_at":"2026-10-17T00:00:00Z","comment":"такси","expense_id":null}
+- «покажи траты на еду в этом месяце» → {"action":"list","user_id":123,"amount":0,"category":"еда","spent_at":"2026-10-01T00:00:00Z","comment":"","expense_id":null}
+- «последнее было не 350, а 450» → {"action":"update","user_id":123,"amount":450,"category":"еда","spent_at":"","comment":"","expense_id":42}
+- «удали такси» → {"action":"delete","user_id":123,"amount":0,"category":"транспорт","spent_at":"","comment":"","expense_id":42}
+
+Если запрос непонятен или не относится к расходам, верни: {"action":"unknown","user_id":123,"amount":0,"category":"другое","spent_at":"","comment":"","expense_id":null}`
+
+// HTTPClient реализует LLMClient через OpenAI-совместимый Chat Completions API.
+type HTTPClient struct {
+	client *http.Client
+	url    string
+	apiKey string
+	model  string
+}
+
+// NewHTTPClient создаёт HTTP-клиент для LLM в формате OpenAI Chat Completions.
+func NewHTTPClient(url, apiKey, model string, timeout time.Duration) *HTTPClient {
 	return &HTTPClient{
 		client: &http.Client{Timeout: timeout},
 		url:    url,
 		apiKey: apiKey,
+		model:  model,
 	}
 }
 
-// ProcessText отправляет текст в LLM и парсит ответ в LLMResponse.
+// chatMessage — элемент диалога в формате OpenAI.
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// chatRequest — тело запроса к OpenAI-совместимому API.
+type chatRequest struct {
+	Model       string        `json:"model"`
+	Messages    []chatMessage `json:"messages"`
+	Temperature float64       `json:"temperature"`
+}
+
+// chatChoice — один вариант ответа.
+type chatChoice struct {
+	Index   int         `json:"index"`
+	Message chatMessage `json:"message"`
+}
+
+// chatResponse — ответ OpenAI-совместимого API.
+type chatResponse struct {
+	ID      string       `json:"id"`
+	Choices []chatChoice `json:"choices"`
+	Error   *chatError   `json:"error,omitempty"`
+}
+
+type chatError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+}
+
+// ProcessText отправляет текст в LLM и парсит структурированный ответ.
 func (c *HTTPClient) ProcessText(ctx context.Context, userID int64, text string) (*LLMResponse, error) {
-	// Формируем запрос к LLM. Формат тела зависит от провайдера;
-	// здесь используется общий формат с полями user_id и text.
-	requestBody := map[string]interface{}{
-		"user_id": userID,
-		"text":    text,
+	userContent := fmt.Sprintf("user_id: %d\nТекст пользователя: %s", userID, text)
+
+	reqBody := chatRequest{
+		Model: c.model,
+		Messages: []chatMessage{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userContent},
+		},
+		Temperature: 0.1,
 	}
 
-	data, err := json.Marshal(requestBody)
+	data, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -67,47 +127,53 @@ func (c *HTTPClient) ProcessText(ctx context.Context, userID int64, text string)
 		return nil, &LLMServerError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
+	var chatResp chatResponse
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		return nil, fmt.Errorf("unmarshal chat response: %w", err)
+	}
+
+	if chatResp.Error != nil {
+		return nil, &LLMServerError{StatusCode: resp.StatusCode, Body: chatResp.Error.Message}
+	}
+
+	if len(chatResp.Choices) == 0 {
+		return nil, fmt.Errorf("LLM returned no choices")
+	}
+
+	content := chatResp.Choices[0].Message.Content
+	jsonStr := extractJSON(content)
+
 	var llmResp LLMResponse
-	if err := json.Unmarshal(body, &llmResp); err != nil {
-		// Если LLM вернул не JSON с нашими полями, пробуем распарсить как общий ответ
-		var raw map[string]interface{}
-		if unmarshalErr := json.Unmarshal(body, &raw); unmarshalErr != nil {
-			return nil, fmt.Errorf("unmarshal LLM response: %w", err)
-		}
-		return mapToResponse(raw)
+	if err := json.Unmarshal([]byte(jsonStr), &llmResp); err != nil {
+		return nil, fmt.Errorf("unmarshal LLM JSON (extracted from content): %w (extracted: %s)", err, jsonStr)
 	}
 
 	return &llmResp, nil
 }
 
-// mapToResponse пытается привести произвольный JSON-ответ LLM к LLMResponse.
-func mapToResponse(raw map[string]interface{}) (*LLMResponse, error) {
-	resp := &LLMResponse{}
+// extractJSON извлекает JSON-объект из текста ответа LLM.
+// Убирает markdown-обёртку ```json ... ``` и находит первый {...}.
+func extractJSON(s string) string {
+	s = strings.TrimSpace(s)
 
-	if v, ok := raw["action"].(string); ok {
-		resp.Action = v
-	}
-	if v, ok := raw["user_id"].(float64); ok {
-		resp.UserID = int64(v)
-	}
-	if v, ok := raw["amount"].(float64); ok {
-		resp.Amount = v
-	}
-	if v, ok := raw["category"].(string); ok {
-		resp.Category = v
-	}
-	if v, ok := raw["spent_at"].(string); ok {
-		resp.SpentAt = v
-	}
-	if v, ok := raw["comment"].(string); ok {
-		resp.Comment = v
-	}
-	if v, ok := raw["expense_id"]; ok && v != nil {
-		if f, ok := v.(float64); ok {
-			id := int64(f)
-			resp.ExpenseID = &id
+	// Убираем markdown-обёртку ```json ... ``` или ``` ... ```
+	if strings.HasPrefix(s, "```") {
+		lines := strings.Split(s, "\n")
+		if len(lines) >= 2 {
+			lines = lines[1:] // убираем ```json
 		}
+		if len(lines) >= 1 && strings.TrimSpace(lines[len(lines)-1]) == "```" {
+			lines = lines[:len(lines)-1] // убираем закрывающую ```
+		}
+		s = strings.TrimSpace(strings.Join(lines, "\n"))
 	}
 
-	return resp, nil
+	// Находим первый { и последний }
+	start := strings.Index(s, "{")
+	end := strings.LastIndex(s, "}")
+	if start >= 0 && end > start {
+		s = s[start : end+1]
+	}
+
+	return s
 }
