@@ -47,7 +47,7 @@ func TestExpenseService_AddExpense(t *testing.T) {
 		Action:    "add",
 		Amount:    350,
 		Category:  "еда",
-		SpentAt:   time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		Period:    "",
 		Comment:   "кофе",
 		ExpenseID: nil,
 	}
@@ -79,6 +79,11 @@ func TestExpenseService_AddExpense(t *testing.T) {
 	}
 	if expenses[0].Category != "еда" {
 		t.Errorf("category = %q, want еда", expenses[0].Category)
+	}
+	// Дата траты устанавливается сервером (текущее время), а не от LLM
+	now := time.Now()
+	if expenses[0].SpentAt.Sub(now) > time.Minute {
+		t.Errorf("spent_at should be current time, got %v", expenses[0].SpentAt)
 	}
 	_ = reply
 }
@@ -129,7 +134,6 @@ func TestExpenseService_UpdateExpense(t *testing.T) {
 		Action:     "update",
 		Amount:     450,
 		Category:   "развлечения",
-		SpentAt:    time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC).Format(time.RFC3339),
 		Comment:    "обновлённый комментарий",
 		ExpenseID:  &expenseID,
 	}
@@ -289,75 +293,6 @@ func TestExpenseService_UnknownAction(t *testing.T) {
 		t.Errorf("reply = %q, want unknown action message", reply)
 	}
 	_ = mockLLM
-}
-
-func TestExpenseService_AddExpense_MidnightFallbackToNow(t *testing.T) {
-	ctx := context.Background()
-	svc, mockLLM, cleanup := newTestService(t)
-	defer cleanup()
-	userID := int64(12345)
-
-	// LLM прислала полночь сегодняшнего дня (ошибка модели для «сегодня»)
-	now := time.Now()
-	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-
-	mockLLM.Response = &llm.LLMResponse{
-		Action:   "add",
-		Amount:   350,
-		Category: "еда",
-		SpentAt:  midnight.Format(time.RFC3339),
-		Comment:  "семечки",
-	}
-
-	if _, err := svc.ProcessMessage(ctx, userID, "семечки 350"); err != nil {
-		t.Fatalf("ProcessMessage failed: %v", err)
-	}
-
-	expenses, err := svc.repo.GetByUserID(ctx, userID)
-	if err != nil {
-		t.Fatalf("GetByUserID failed: %v", err)
-	}
-	if len(expenses) != 1 {
-		t.Fatalf("expected 1 expense, got %d", len(expenses))
-	}
-
-	got := expenses[0].SpentAt
-	if got.Hour() == 0 && got.Minute() == 0 && got.Second() == 0 {
-		t.Errorf("spent_at should be replaced with current time, got midnight %v", got)
-	}
-}
-
-func TestExpenseService_AddExpense_OldDateClamped(t *testing.T) {
-	ctx := context.Background()
-	svc, mockLLM, cleanup := newTestService(t)
-	defer cleanup()
-	userID := int64(12345)
-
-	// LLM галлюцинировала дату полтора года назад (как в переписке: 23.05.2024)
-	mockLLM.Response = &llm.LLMResponse{
-		Action:   "add",
-		Amount:   350,
-		Category: "еда",
-		SpentAt:  "2024-05-23T12:00:00Z",
-		Comment:  "семечки",
-	}
-
-	if _, err := svc.ProcessMessage(ctx, userID, "семечки 350"); err != nil {
-		t.Fatalf("ProcessMessage failed: %v", err)
-	}
-
-	expenses, err := svc.repo.GetByUserID(ctx, userID)
-	if err != nil {
-		t.Fatalf("GetByUserID failed: %v", err)
-	}
-	if len(expenses) != 1 {
-		t.Fatalf("expected 1 expense, got %d", len(expenses))
-	}
-
-	got := expenses[0].SpentAt
-	if time.Since(got) > time.Minute {
-		t.Errorf("spent_at should be clamped to now, got %v (clamped from 2024)", got)
-	}
 }
 
 func TestExpenseService_DeletePassesRecentExpensesContext(t *testing.T) {

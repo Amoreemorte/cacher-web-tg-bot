@@ -79,22 +79,42 @@ func (s *ExpenseService) withRecentExpenses(ctx context.Context, userID int64, r
 	return sb.String()
 }
 
-// resolveSpentAt возвращает правдоподобное время траты, защищая от
-// галлюцинаций даты у LLM:
-//   - полночь сегодняшнего дня (частая ошибка для «сегодня»/без даты) → now;
-//   - дата вне разумного окна (больше года назад или позже конца завтрашнего
-//     дня) → now;
-//   - остальное (вчера, начало месяца и т.п.) → как прислала LLM.
-func resolveSpentAt(t, now time.Time) time.Time {
-	if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 &&
-		t.Year() == now.Year() && t.Month() == now.Month() && t.Day() == now.Day() {
-		return now
+// spentAtFromPeriod вычисляет время траты на сервере по семантической метке
+// периода от LLM. Даты от LLM не принимаются вовсе — исключает галлюцинации:
+//   - "" / "today" → текущее время;
+//   - "yesterday" → текущее время вчерашнего дня;
+//   - "week" / "month" (add без явной даты) → текущее время.
+func spentAtFromPeriod(period string, now time.Time) time.Time {
+	if period == "yesterday" {
+		return now.AddDate(0, 0, -1)
 	}
-	if t.Before(now.AddDate(-1, 0, 0)) || t.After(now.AddDate(0, 0, 1)) {
-		log.Printf("LLM returned implausible spent_at %s, using current time", t.Format(time.RFC3339))
-		return now
+	return now
+}
+
+// periodRange вычисляет границы периода для фильтра списка на сервере.
+// nil означает «без ограничения по дате».
+func periodRange(period string, now time.Time) (from, to *time.Time) {
+	dayStart := func(t time.Time) time.Time {
+		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 	}
-	return t
+	switch period {
+	case "today":
+		f := dayStart(now)
+		t := f.Add(24*time.Hour - time.Nanosecond)
+		return &f, &t
+	case "yesterday":
+		f := dayStart(now.AddDate(0, 0, -1))
+		t := f.Add(24*time.Hour - time.Nanosecond)
+		return &f, &t
+	case "week":
+		f := now.AddDate(0, 0, -7)
+		return &f, nil
+	case "month":
+		f := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		t := f.AddDate(0, 1, 0).Add(-time.Nanosecond)
+		return &f, &t
+	}
+	return nil, nil
 }
 
 // ProcessMessage handles an incoming text message from a user (Telegram bot entry point).
@@ -110,17 +130,8 @@ func (s *ExpenseService) handleAdd(ctx context.Context, userID int64, resp *llm.
 		Comment:  resp.Comment,
 	}
 
-	// Парсим spent_at с защитой от галлюцинаций даты у LLM
-	if resp.SpentAt != "" {
-		t, err := time.Parse(time.RFC3339, resp.SpentAt)
-		if err == nil {
-			expense.SpentAt = resolveSpentAt(t, time.Now())
-		} else {
-			expense.SpentAt = time.Now().UTC()
-		}
-	} else {
-		expense.SpentAt = time.Now().UTC()
-	}
+	// Дата траты вычисляется ТОЛЬКО на сервере — LLM дат не возвращает
+	expense.SpentAt = spentAtFromPeriod(resp.Period, time.Now())
 
 	if err := s.repo.Create(ctx, expense); err != nil {
 		return "", fmt.Errorf("create expense: %w", err)
@@ -154,11 +165,7 @@ func (s *ExpenseService) handleUpdate(ctx context.Context, userID int64, resp *l
 	if resp.Comment != "" {
 		expense.Comment = resp.Comment
 	}
-	if resp.SpentAt != "" {
-		if t, err := time.Parse(time.RFC3339, resp.SpentAt); err == nil {
-			expense.SpentAt = resolveSpentAt(t, time.Now())
-		}
-	}
+	// Дата траты при обновлении не меняется — период от LLM не влияет на update
 
 	if err := s.repo.Update(ctx, expense); err != nil {
 		return "", fmt.Errorf("update expense: %w", err)
@@ -197,11 +204,10 @@ func (s *ExpenseService) handleList(ctx context.Context, userID int64, resp *llm
 	if resp.Category != "" {
 		filter.Category = &resp.Category
 	}
-	if resp.SpentAt != "" {
-		if t, err := time.Parse(time.RFC3339, resp.SpentAt); err == nil {
-			filter.FromDate = &t
-		}
-	}
+	// Границы периода вычисляются на сервере по семантической метке от LLM
+	from, to := periodRange(resp.Period, time.Now())
+	filter.FromDate = from
+	filter.ToDate = to
 
 	expenses, err := s.repo.GetAll(ctx, filter)
 	if err != nil {

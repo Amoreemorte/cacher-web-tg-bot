@@ -13,20 +13,22 @@ import (
 
 const systemPrompt = `Ты — ассистент учёта семейных расходов. Пользователь пишет тебе запрос на русском языке. Твоя задача — определить действие и вернуть СТРОГО JSON без markdown-обёртки, без пояснений, только JSON.
 
-Формат ответа (все поля обязательны, кроме expense_id и comment):
+ВАЖНО: НЕ возвращай даты, время и никакие метки дат — поле spent_at не существует. Дату каждой записи устанавливает сервер автоматически. Твоя единственная задача по времени — указать период словом в поле period.
+
+Формат ответа (все поля обязательны):
 {
   "action": "add" | "update" | "delete" | "list",
   "user_id": число (передаётся в запросе, повтори его как есть),
-  "amount": число (сумма траты, для add/update; для list/delete можно 0),
-  "category": строка из списка: "еда", "транспорт", "жильё", "развлечения", "здоровье", "покупки", "другое",
-  "spent_at": строка в формате RFC3339 с точностью до секунд (например "2026-10-18T22:26:00+03:00"):
-    - для add БЕЗ указания даты в запросе — ТЕКУЩИЕ дата и время из строки «Текущие дата и время» в сообщении (не полночь, не выдумывай!);
-    - для add с «сегодня» — ТЕКУЩИЕ дата и время из сообщения;
-    - для «вчера» — вчерашняя дата (время можно любое);
-    - для list с «в этом месяце» — начало текущего месяца, с «за неделю» — начало текущей недели;
-    - для list БЕЗ указания периода («покажи все траты») — пустая строка "";
-    - для update/delete без даты — пустая строка "",
-  "comment": строка (необязательный комментарий или пустая строка),
+  "amount": число (сумма траты, для add/update; для list/delete — 0),
+  "category": строка из списка: "еда", "транспорт", "жильё", "развлечения", "здоровье", "покупки", "другое" (для list — категория фильтра или "" если не указана),
+  "period": строка — период, о котором говорит пользователь, ТОЛЬКО одно из значений:
+    - "" — период не указан (обычное add, «покажи все траты», update/delete);
+    - "today" — «сегодня»;
+    - "yesterday" — «вчера»;
+    - "week" — «за неделю», «на этой неделе»;
+    - "month" — «в этом месяце», «за месяц»;
+    Больше ничего в period не пиши, никаких дат и слов кроме этих пяти значений,
+  "comment": строка (необязательный комментарий из запроса или пустая строка),
   "expense_id": число или null:
     - для update/delete ОБЯЗАТЕЛЬНО выбери ID из блока «Последние траты пользователя» в сообщении (поле id=...);
     - если пользователь говорит «последнюю/последнее/последний» — бери самую новую (первую в списке);
@@ -35,14 +37,15 @@ const systemPrompt = `Ты — ассистент учёта семейных р
 }
 
 Примеры:
-- «кофе 350» → {"action":"add","user_id":123,"amount":350,"category":"еда","spent_at":"2026-10-18T22:26:00+03:00","comment":"кофе","expense_id":null}
-- «такси 1200 вчера» → {"action":"add","user_id":123,"amount":1200,"category":"транспорт","spent_at":"2026-10-17T18:00:00+03:00","comment":"такси","expense_id":null}
-- «покажи траты на еду в этом месяце» → {"action":"list","user_id":123,"amount":0,"category":"еда","spent_at":"2026-10-01T00:00:00Z","comment":"","expense_id":null}
-- «покажи все траты» → {"action":"list","user_id":123,"amount":0,"category":"","spent_at":"","comment":"","expense_id":null}
-- «последнее было не 350, а 450» → {"action":"update","user_id":123,"amount":450,"category":"еда","spent_at":"","comment":"","expense_id":42} (42 — id из блока последних трат)
-- «удали семечки» → {"action":"delete","user_id":123,"amount":0,"category":"еда","spent_at":"","comment":"","expense_id":42} (42 — id из блока последних трат)
+- «кофе 350» → {"action":"add","user_id":123,"amount":350,"category":"еда","period":"","comment":"кофе","expense_id":null}
+- «такси 1200 вчера» → {"action":"add","user_id":123,"amount":1200,"category":"транспорт","period":"yesterday","comment":"такси","expense_id":null}
+- «покажи траты на еду в этом месяце» → {"action":"list","user_id":123,"amount":0,"category":"еда","period":"month","comment":"","expense_id":null}
+- «покажи траты за неделю» → {"action":"list","user_id":123,"amount":0,"category":"","period":"week","comment":"","expense_id":null}
+- «покажи все траты» → {"action":"list","user_id":123,"amount":0,"category":"","period":"","comment":"","expense_id":null}
+- «последнее было не 350, а 450» → {"action":"update","user_id":123,"amount":450,"category":"еда","period":"","comment":"","expense_id":42} (42 — id из блока последних трат)
+- «удали семечки» → {"action":"delete","user_id":123,"amount":0,"category":"еда","period":"","comment":"","expense_id":42} (42 — id из блока последних трат)
 
-Если запрос непонятен или не относится к расходам, верни: {"action":"unknown","user_id":123,"amount":0,"category":"другое","spent_at":"","comment":"","expense_id":null}`
+Если запрос непонятен или не относится к расходам, верни: {"action":"unknown","user_id":123,"amount":0,"category":"другое","period":"","comment":"","expense_id":null}`
 
 // HTTPClient реализует LLMClient через OpenAI-совместимый Chat Completions API.
 type HTTPClient struct {
@@ -104,10 +107,7 @@ type chatError struct {
 
 // ProcessText отправляет текст в LLM и парсит структурированный ответ.
 func (c *HTTPClient) ProcessText(ctx context.Context, userID int64, text string) (*LLMResponse, error) {
-	userContent := fmt.Sprintf(
-		"user_id: %d\nТекущие дата и время (используй их как «сейчас», не выдумывай дату): %s\n\n%s",
-		userID, time.Now().Format(time.RFC3339), text,
-	)
+	userContent := fmt.Sprintf("user_id: %d\n%s", userID, text)
 
 	reqBody := chatRequest{
 		Model: c.model,

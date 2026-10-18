@@ -7,14 +7,16 @@ import (
 )
 
 // LLMResponse — структура, которую возвращает LLM после обработки текста пользователя.
+// Даты и время НЕ возвращаются — период задаётся семантической меткой,
+// фактические даты всегда вычисляет сервер.
 type LLMResponse struct {
-	Action     string  `json:"action"`      // add | update | delete | list
-	UserID     int64   `json:"user_id"`     // Telegram ID пользователя
-	Amount     float64 `json:"amount"`      // сумма (для add/update)
-	Category   string  `json:"category"`    // категория (для add/update)
-	SpentAt    string  `json:"spent_at"`    // дата траты ISO 8601 (для add/update)
-	Comment    string  `json:"comment"`     // комментарий (опционально)
-	ExpenseID  *int64  `json:"expense_id"`  // ID записи (для update/delete)
+	Action    string  `json:"action"`    // add | update | delete | list
+	UserID    int64   `json:"user_id"`   // Telegram ID пользователя
+	Amount    float64 `json:"amount"`    // сумма (для add/update)
+	Category  string  `json:"category"`  // категория
+	Period    string  `json:"period"`    // "" | today | yesterday | week | month (метка периода, не дата)
+	Comment   string  `json:"comment"`   // комментарий (опционально)
+	ExpenseID *int64  `json:"expense_id"` // ID записи (для update/delete)
 }
 
 // LLMClient определяет интерфейс для взаимодействия с языковой моделью.
