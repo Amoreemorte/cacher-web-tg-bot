@@ -1,4 +1,4 @@
-package service
+﻿package service
 
 import (
 	"context"
@@ -137,7 +137,11 @@ func (s *ExpenseService) handleAdd(ctx context.Context, userID int64, resp *llm.
 		return "", fmt.Errorf("create expense: %w", err)
 	}
 
-	return fmt.Sprintf("Добавлено: %s %.2f на %s", expense.Category, expense.Amount, expense.SpentAt.Format("02.01.2006 15:04")), nil
+	commentPart := ""
+	if expense.Comment != "" {
+		commentPart = " - " + expense.Comment
+	}
+	return fmt.Sprintf("Добавлено: %s%s %.2f на %s", expense.Category, commentPart, expense.Amount, expense.SpentAt.Format("02.01.2006 15:04")), nil
 }
 
 func (s *ExpenseService) handleUpdate(ctx context.Context, userID int64, resp *llm.LLMResponse) (string, error) {
@@ -171,7 +175,11 @@ func (s *ExpenseService) handleUpdate(ctx context.Context, userID int64, resp *l
 		return "", fmt.Errorf("update expense: %w", err)
 	}
 
-	return fmt.Sprintf("Обновлено: %s %.2f", expense.Category, expense.Amount), nil
+	commentPart := ""
+	if expense.Comment != "" {
+		commentPart = " - " + expense.Comment
+	}
+	return fmt.Sprintf("Обновлено: %s%s %.2f", expense.Category, commentPart, expense.Amount), nil
 }
 
 func (s *ExpenseService) handleDelete(ctx context.Context, userID int64, resp *llm.LLMResponse) (string, error) {
@@ -222,7 +230,11 @@ func (s *ExpenseService) handleList(ctx context.Context, userID int64, resp *llm
 	sb.WriteString("Ваши траты:\n")
 	total := 0.0
 	for _, e := range expenses {
-		sb.WriteString(fmt.Sprintf("- %s %.2f (%s)\n", e.Category, e.Amount, e.SpentAt.Format("02.01.2006")))
+		commentPart := ""
+		if e.Comment != "" {
+			commentPart = " - " + e.Comment
+		}
+		sb.WriteString(fmt.Sprintf("- %s%s %.2f (%s)\n", e.Category, commentPart, e.Amount, e.SpentAt.Format("02.01.2006")))
 		total += e.Amount
 	}
 	sb.WriteString(fmt.Sprintf("Итого: %.2f", total))
