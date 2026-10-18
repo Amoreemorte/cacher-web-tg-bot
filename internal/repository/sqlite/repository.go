@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -111,7 +112,14 @@ func (r *SQLiteRepository) GetByID(ctx context.Context, id int64) (*domain.Expen
 		FROM expenses WHERE id = ?
 	`
 	row := r.db.QueryRowContext(ctx, query, id)
-	return scanExpense(row)
+	expense, err := scanExpense(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get expense by id: %w", err)
+	}
+	return expense, nil
 }
 
 // GetByUserID возвращает все траты пользователя, отсортированные по дате траты (по убыванию).
