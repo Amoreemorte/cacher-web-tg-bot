@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Expense представляет запись о семейной трате.
 type Expense struct {
@@ -16,13 +19,25 @@ type Expense struct {
 
 // AllowedCategories содержит допустимые категории трат.
 var AllowedCategories = map[string]struct{}{
-	"еда":            {},
-	"транспорт":      {},
-	"жильё":          {},
-	"развлечения":    {},
-	"здоровье":       {},
-	"покупки":        {},
-	"другое":         {},
+	"еда":         {},
+	"транспорт":   {},
+	"жильё":       {},
+	"развлечения": {},
+	"здоровье":    {},
+	"покупки":     {},
+	"другое":      {},
+}
+
+// NormalizeCategory приводит категорию к каноническому виду:
+// обрезает пробелы и переводит в нижний регистр.
+func NormalizeCategory(category string) string {
+	return strings.ToLower(strings.TrimSpace(category))
+}
+
+// IsValidCategory сообщает, входит ли категория в список допустимых.
+func IsValidCategory(category string) bool {
+	_, ok := AllowedCategories[NormalizeCategory(category)]
+	return ok
 }
 
 // ExpenseFilter задаёт параметры фильтрации при получении списка трат.

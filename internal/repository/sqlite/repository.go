@@ -184,11 +184,12 @@ func (r *SQLiteRepository) GetAll(ctx context.Context, filter domain.ExpenseFilt
 func (r *SQLiteRepository) Update(ctx context.Context, expense *domain.Expense) error {
 	query := `
 		UPDATE expenses
-		SET amount = ?, category = ?, spent_at = ?, comment = ?, updated_at = ?
+		SET user_id = ?, amount = ?, category = ?, spent_at = ?, comment = ?, updated_at = ?
 		WHERE id = ?
 	`
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := r.db.ExecContext(ctx, query,
+		expense.UserID,
 		expense.Amount,
 		expense.Category,
 		expense.SpentAt.UTC().Format(time.RFC3339),

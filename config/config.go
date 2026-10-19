@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -12,16 +13,16 @@ type Config struct {
 	Debug            bool
 
 	// LLM настройки
-	LLMPrimaryURL      string
-	LLMPrimaryKey      string
-	LLMPrimaryModel    string
-	LLMBackupURL       string
-	LLMBackupKey       string
-	LLMBackupModel     string
-	LLMTimeoutSeconds  int
-	LLMMaxRetries      int
-	LLMRetryDelaySec   int
-	LLMMaxTokens       int
+	LLMPrimaryURL     string
+	LLMPrimaryKey     string
+	LLMPrimaryModel   string
+	LLMBackupURL      string
+	LLMBackupKey      string
+	LLMBackupModel    string
+	LLMTimeoutSeconds int
+	LLMMaxRetries     int
+	LLMRetryDelaySec  int
+	LLMMaxTokens      int
 }
 
 // Load загружает конфигурацию из переменных окружения.
@@ -67,18 +68,18 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		TelegramBotToken:   token,
-		Debug:              debug,
-		LLMPrimaryURL:      os.Getenv("LLM_PRIMARY_URL"),
-		LLMPrimaryKey:      os.Getenv("LLM_PRIMARY_KEY"),
-		LLMPrimaryModel:    os.Getenv("LLM_PRIMARY_MODEL"),
-		LLMBackupURL:       os.Getenv("LLM_BACKUP_URL"),
-		LLMBackupKey:       os.Getenv("LLM_BACKUP_KEY"),
-		LLMBackupModel:     os.Getenv("LLM_BACKUP_MODEL"),
-		LLMTimeoutSeconds:  timeout,
-		LLMMaxRetries:      maxRetries,
-		LLMRetryDelaySec:   retryDelay,
-		LLMMaxTokens:       maxTokens,
+		TelegramBotToken:  token,
+		Debug:             debug,
+		LLMPrimaryURL:     os.Getenv("LLM_PRIMARY_URL"),
+		LLMPrimaryKey:     os.Getenv("LLM_PRIMARY_KEY"),
+		LLMPrimaryModel:   os.Getenv("LLM_PRIMARY_MODEL"),
+		LLMBackupURL:      os.Getenv("LLM_BACKUP_URL"),
+		LLMBackupKey:      os.Getenv("LLM_BACKUP_KEY"),
+		LLMBackupModel:    os.Getenv("LLM_BACKUP_MODEL"),
+		LLMTimeoutSeconds: timeout,
+		LLMMaxRetries:     maxRetries,
+		LLMRetryDelaySec:  retryDelay,
+		LLMMaxTokens:      maxTokens,
 	}, nil
 }
 
@@ -90,4 +91,68 @@ func (c *Config) LLMTimeout() time.Duration {
 // LLRetryDelay возвращает задержка между повторами.
 func (c *Config) LLRetryDelay() time.Duration {
 	return time.Duration(c.LLMRetryDelaySec) * time.Second
+}
+
+// ServerConfig хранит настройки REST API сервера веб-панели.
+type ServerConfig struct {
+	Addr           string
+	DBPath         string
+	RateLimitRPS   float64
+	RateLimitBurst int
+	AllowedOrigins []string
+	Debug          bool
+}
+
+// LoadServer загружает конфигурацию HTTP-сервера из переменных окружения.
+// Токен Telegram здесь не нужен: сервер запускается отдельно от бота.
+func LoadServer() *ServerConfig {
+	addr := ":8080"
+	if v := os.Getenv("HTTP_ADDR"); v != "" {
+		addr = v
+	}
+
+	dbPath := "expenses.db"
+	if v := os.Getenv("DB_PATH"); v != "" {
+		dbPath = v
+	}
+
+	rps := 10.0
+	if v := os.Getenv("RATE_LIMIT_RPS"); v != "" {
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil && parsed >= 0 {
+			rps = parsed
+		}
+	}
+
+	burst := 20
+	if v := os.Getenv("RATE_LIMIT_BURST"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			burst = parsed
+		}
+	}
+
+	origins := []string{"*"}
+	if v := os.Getenv("CORS_ALLOWED_ORIGINS"); v != "" {
+		origins = origins[:0]
+		for _, origin := range strings.Split(v, ",") {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				origins = append(origins, origin)
+			}
+		}
+	}
+
+	debug := false
+	if v := os.Getenv("DEBUG"); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			debug = parsed
+		}
+	}
+
+	return &ServerConfig{
+		Addr:           addr,
+		DBPath:         dbPath,
+		RateLimitRPS:   rps,
+		RateLimitBurst: burst,
+		AllowedOrigins: origins,
+		Debug:          debug,
+	}
 }
