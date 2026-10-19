@@ -248,7 +248,7 @@ npm run typecheck
 ### Проверки
 - ✅ `npm run build` — TypeScript компилируется без ошибок, Vite собирает `dist/`
 - ✅ `npm run typecheck` — строгая проверка типов (`strict: true`, `noUnusedLocals`, `noUnusedParameters`, `noUncheckedIndexedAccess`)
-- ✅ `npm run dev` — dev-сервер на `:5173` с прокси на `:8080`
+- ✅ `npm run dev -- --host` — dev-сервер на `:5173` с прокси на `:8080`
 
 ### Интеграция с бэкендом
 - Бэкенд должен быть запущен на `:8080` (или указан в `VITE_API_PROXY_TARGET`)
@@ -260,5 +260,88 @@ npm run typecheck
 - Нет графиков (только таблица)
 - Нет сложной архитектуры (Zustand, Redux, React Query) — только локальное состояние в хуке
 - Нет LLM-интеграции на фронте (бот работает отдельно в Telegram)
-- Нет Dockerfile/docker-compose (следующий этап)
+- Нет Dockerfile/docker-compose (см. Этап 6)
+
+## Этап 6 (выполнено): Docker Compose и production-сборка
+
+Весь сервис запускается одной командой `docker compose up --build -d`.
+
+### Архитектура развёртывания
+- **`api`** — Go REST API (бинарник `server` из образа `expense-bot/app`). Порт не публикуется; доступ через `web`.
+- **`bot`** — Telegram-бот (бинарник `bot` из того же образа `expense-bot/app`).
+- **`web`** — Nginx с собранным React-приложением (`expense-bot/web`); проксирует `/api/` и `/healthz` на `api:8080`.
+- **`expense-data`** — named volume, монтируется в `/data` zarówno `api`, так и `bot`; файл SQLite `/data/expenses.db` общий.
+- Сервисы связаны внутренней Docker-сетью (`expense-bot_default`).
+- Перезапуск: `unless-stopped`; у `api` healthcheck на `GET /healthz`; `web` стартует после `api` (`condition: service_healthy`).
+
+### Файлы этапа 6
+- `Dockerfile` — многостейджевый: сборка на `golang:1.26-alpine` (CGO_ENABLED=0), runtime на `alpine:3.21` с `ca-certificates` + `wget`, без исходников/Go toolchain, пользователь `expensebot` (uid 1000), WORKDIR `/data`.
+- `web/Dockerfile` — сборка на `node:24-alpine` (`npm ci`, `npm run build` = `tsc -b && vite build`), раздача через `nginx:1.29-alpine`, `nginx.conf` с SPA-фоллбэком и прокси `/api`, `/healthz`.
+- `web/nginx.conf` — статика из `/usr/share/nginx/html`, `try_files ... /index.html`, прокси на `api:8080` без изменения URI.
+- `compose.yaml` — определение сервисов, volume, сети, переменных.
+- `.env.example` — шаблон переменных окружения (без секретов); `.env` (локальный, в `.gitignore`) — реальные значения.
+- `.dockerignore`, `web/.dockerignore` — исключают исходники, `node_modules`, `dist`, `.env`, БД из контекста сборки.
+
+### Изменения в коде (минимум, обратная совместимость)
+- `config.Config` получило поле `DBPath` (env `DB_PATH`, по умолчанию `expenses.db`); `cmd/bot/main.go` использует `cfg.DBPath` вместо жёсткого `"expenses.db"`. `ServerConfig.DBPath` уже существовал.
+- `internal/repository/sqlite/repository.go`: подключение к одному файлу SQLite из двух процессов — `_journal_mode=WAL`, `_busy_timeout=5000`, `_foreign_keys=1`, `_txlock=IMMEDIATE`, `SetMaxOpenConns(1)`. Схема `CREATE TABLE IF NOT EXISTS` безопасна при одновременном старте.
+
+### Переменные окружения (`.env`)
+См. `.env.example`. Обязательно заполнить `TELEGRAM_BOT_TOKEN` (без него бот не стартует). Пример минимального `.env`:
+```
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+LLM_PRIMARY_URL=https://api.groq.com/openai/v1/chat/completions
+LLM_PRIMARY_KEY=...
+LLM_PRIMARY_MODEL=llama-3.3-70b-versatile
+DB_PATH=/data/expenses.db
+WEB_PORT=8080
+```
+
+### Как запустить
+```bash
+# 1. Скопировать шаблон и заполнить токены
+cp .env.example .env
+# (отредактировать .env: TELEGRAM_BOT_TOKEN, LLM ключи)
+
+# 2. Собрать и запустить все сервисы в фоне
+docker compose up --build -d
+
+# 3. Открыть веб-панель: http://localhost:8080 (порт меняется переменной WEB_PORT)
+```
+
+### Логи и управление
+```bash
+docker compose logs -f        # логи всех сервисов
+docker compose logs -f bot    # логи только бота
+docker compose logs -f api    # логи только API
+docker compose ps             # статус сервисов
+docker compose stop           # остановить
+docker compose start          # запустить снова
+docker compose down           # остановить и удалить контейнеры
+```
+
+### Данные между перезапусками
+SQLite-файл хранится в named volume `expense-data` (`/data/expenses.db`); данные сохраняются после `docker compose down` и пересборки.
+
+Полное удаление (включая базу):
+```bash
+docker compose down -v   # ВНИМАНИЕ: удаляет volume expense-data вместе с expenses.db
+```
+
+### Пересборка отдельного сервиса
+```bash
+docker compose build api      # пересобрать образ сервиса
+docker compose up --build -d api bot web
+```
+
+### Проверка работоспособности
+- API: `curl http://localhost:8080/healthz` → `{"status":"ok"}` (или через Nginx, тот же путь)
+- Веб-панель: http://localhost:8080
+- Telegram-бот: написать боту «кофе 350» (нужен действительный `TELEGRAM_BOT_TOKEN`)
+- БД общая: записи, сделанные ботом, видны в веб-панели и наоборот (один volume `/data`)
+
+### Ограничения
+- Docker Desktop daemon в текущей среде не запущен, поэтому `docker compose build/up` не проверялись вживую (проверен только `docker compose config`).
+- Для работы бота нужен реальный `TELEGRAM_BOT_TOKEN`; для ответов ИИ — доступ к LLM (primary/backup).
+
 
