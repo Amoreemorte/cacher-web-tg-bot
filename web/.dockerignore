@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.local
+.env.development
+.node_modules
+node_modules
+dist
+dist-ssr
+npm-debug.log*
+*.md
+tsconfig.tsbuildinfo
+*.log
+Dockerfile
+nginx.conf
+.dockerignore

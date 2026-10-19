@@ -1,0 +1,14 @@
+.git
+.gitignore
+AGENTS.md
+README.md
+docker-compose.yml
+compose.yaml
+Dockerfile
+.dockerignore
+.env
+.env.example
+*.db
+*.test.db
+*.log
+web
