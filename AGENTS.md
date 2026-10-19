@@ -63,6 +63,13 @@
 - **Контекст для update/delete**: перед запросом к LLM сервис добавляет список последних 10 трат пользователя (id, сумма, категория, дата, комментарий) — без него LLM не может вернуть `expense_id`.
 - **Контекст для update/delete**: перед запросом к LLM сервис добавляет список последних 10 трат пользователя (id, сумма, категория, дата, комментарий) — без него LLM не может вернуть `expense_id`. Текущее время также передаётся в сообщении к LLM.
 
+## Этап 4 (выполнено)
+- REST API сервер для веб-панели на чистом `net/http` (без внешних веб-фреймворков)
+- Эндпоинты: `GET /api/v1/expenses` (список с фильтрами user_id, категория, период, пагинация), `POST /api/v1/expenses` (создание), `PUT /api/v1/expenses/{id}` (обновление), `DELETE /api/v1/expenses/{id}` (удаление)
+- Глобальный rate limiting (токен-бакет через `golang.org/x/time/rate`, лимит настраивается через `RATE_LIMIT_RPS` и `RATE_LIMIT_BURST`)
+- Защита от SQL-инъекций: все запросы к БД используют параметризованные prepared statements (через `database/sql` + `modernc.org/sqlite`), строковая конкатенация в SQL не допускается
+- Тесты на каждый эндпоинт с использованием `httptest` и временной SQLite БД
+
 ## Бесплатные нейросети для LLM-агента
 
 ### Основная (Primary)
@@ -136,53 +143,122 @@ go run ./cmd/bot
 ## Правила разработки
 - После каждого теста тестовая база данных чистится (удаляются все записи из `expenses` и `pending_llm_tasks` или пересоздаётся файл БД).
 
-## Этап 4 (выполнено)
-- REST API сервер для веб-панели на чистом `net/http` (без внешних веб-фреймворков; в Go 1.22+ встроенный роутинг с методами и wildcard-параметрами)
-- Точка входа: `cmd/server/main.go`, запуск — `go run ./cmd/server` (переменные окружения см. ниже)
-- Слоистость сохранена: HTTP-слой (`internal/server`) зависит только от интерфейса `repository.ExpenseRepository`, поэтому в тестах подменяется любой реализацией
+## Этап 5 (выполнено)
 
-### Эндпоинты
-| Метод | Путь | Назначение | Успех |
-|---|---|---|---|
-| `GET` | `/healthz` | проверка живости | `200` |
-| `GET` | `/api/v1/expenses` | список трат с фильтрами и пагинацией | `200` (JSON-массив) |
-| `POST` | `/api/v1/expenses` | создание траты | `201` + `Location` |
-| `GET` | `/api/v1/expenses/{id}` | одна трата | `200` |
-| `PUT` | `/api/v1/expenses/{id}` | полная замена (обязательны `user_id`, `amount`, `category`, `spent_at`) | `200` |
-| `PATCH` | `/api/v1/expenses/{id}` | частичное обновление (любое подмножество полей) | `200` |
-| `DELETE` | `/api/v1/expenses/{id}` | удаление | `204` |
+Веб-панель для главы семьи: одностраничное React-приложение с таблицей трат, фильтрами, формой создания/редактирования и подтверждением удаления.
 
-Фильтры `GET /api/v1/expenses`: `user_id`, `category`, `from`, `to` (RFC3339 или `YYYY-MM-DD`; для `to` без времени берётся конец дня), `limit` (1..500, по умолчанию 50), `offset`.
+### Стек
+- **React 18** + **TypeScript 5.6** + **Vite 5.4**
+- Чистый CSS (без UI-библиотек: Tailwind, MUI, Ant Design и т.д.)
+- Нативный `fetch` (без axios, SWR, React Query и т.д.)
+- Без графиков и сложной архитектуры (только CRUD + фильтры)
 
-Коды ошибок: `400` — некорректный JSON/query-параметр/`id`; `404` — трата не найдена; `405` — метод не поддерживается; `422` — семантическая валидация (`amount <= 0`, неизвестная категория, неверная дата, слишком длинный комментарий); `429` — превышен rate limit; `500` — внутренняя ошибка. Все ошибки — в едином формате `{"error": "...", "code": 404, "details": "..."}` (включая 404/405 от `http.ServeMux`, которые конвертируются middleware).
+### Структура `web/`
+```
+web/
+├── src/
+│   ├── api/
+│   │   ├── client.ts      # REST-клиент: listExpenses, createExpense, replaceExpense, deleteExpense
+│   │   └── types.ts       # Интерфейсы (Expense, ExpensePayload, ExpenseFilters), утилиты форматирования
+│   ├── components/
+│   │   ├── ConfirmDialog.tsx  # Модальное подтверждение удаления (focus trap, Escape)
+│   │   ├── ExpenseForm.tsx    # Форма создания/редактирования (валидация, переиспользование)
+│   │   ├── ExpenseTable.tsx   # Адаптивная таблица (desktop → grid, mobile → карточки)
+│   │   ├── Filters.tsx        # Фильтры по ID, категории, периоду (today/week/month/all)
+│   │   └── StatusViews.tsx    # Loading/Error/Empty/Flash состояния
+│   ├── hooks/
+│   │   └── useExpenses.ts     # Хук: загрузка, фильтры, пагинация, удаление, flash-сообщения
+│   ├── App.tsx            # Главный компонент: оркестрация формы, таблицы, модалки
+│   ├── App.css            # Глобальные стили, кнопки, пагинация
+│   └── main.tsx           # Точка входа: createRoot + StrictMode
+├── index.html             # HTML-шаблон
+├── package.json           # Зависимости и скрипты
+├── tsconfig.json          # Конфигурация TypeScript (strict, noUnusedLocals)
+├── vite.config.ts         # Vite + React + dev-прокси на Go-бэкенд
+├── .env.example           # Пример переменных окружения
+├── .gitignore             # node_modules, dist, .env.local
+└── README.md              # Инструкция запуска
+```
 
-### Middleware (порядок снаружи внутрь)
-1. `SecurityHeadersMiddleware` — `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`
-2. `CORSMiddleware` — CORS для веб-панели, preflight `OPTIONS` → `204`; список origin'ов из `CORS_ALLOWED_ORIGINS` (`*` по умолчанию)
-3. `RateLimitMiddleware` — глобальный для всех маршрутов rate limiting, токен-бакет на каждого клиента (`golang.org/x/time/rate`), при исчерпании `429` + `Retry-After: 1`; простаивающие бакеты вычищаются, чтобы карта не росла
-4. `RecoveryMiddleware` — паника в обработчике → `500` JSON, сервер продолжает работать
-5. `JSONErrorMiddleware` — текстовые `404`/`405` от `http.ServeMux` → JSON
-6. `http.ServeMux` с маршрутами
+### Функциональность
+- **Просмотр**: таблица с датой, категорией, комментарием, ID, суммой, кнопками «Изменить»/«Удалить»
+- **Фильтры**: `user_id` (числовой), `category` (dropdown), `period` (сегодня/неделя/месяц/всё время)
+- **Пагинация**: кнопки «Назад»/«Вперёд», индикатор текущей страницы
+- **Создание**: кнопка «+ Добавить трату» → форма с полями `user_id`, `amount`, `category`, `spent_at`, `comment`
+- **Редактирование**: кнопка «Изменить» в таблице → та же форма, предзаполненная данными
+- **Удаление**: кнопка «Удалить» → модальное подтверждение → API `DELETE`
+- **Состояния**:
+  - Загрузка: спиннер «Загружаем траты…»
+  - Ошибка: баннер с сообщением и кнопкой «Повторить»
+  - Пусто: заглушка «Трат пока нет» + кнопка «Добавить трату»
+  - Flash: уведомление «Трата удалена» / «Не удалось удалить трату»
+- **Адаптивность**: таблица на desktop → grid-карточки на mobile (< 720px)
+- **Без авторизации**: как и требуется
 
-### Защита от SQL-инъекций
-- Все запросы к БД — параметризованные (`database/sql` + `modernc.org/sqlite`), строковая конкатенация значений в SQL не используется
-- Входные данные валидируются до обращения к БД: `user_id` приводится к `int64`, `category` — только из белого списка `domain.AllowedCategories` (регистр/пробелы нормализуются), даты парсятся строго по списку layout'ов, `comment` ограничен 500 символами и очищен от управляющих символов, тело запроса ограничено 1 MiB, неизвестные JSON-поля запрещены (`DisallowUnknownFields`)
-- Тесты подтверждают, что `' OR 1=1 --` в query и `'; DROP TABLE expenses; --` в комментарии не ломают выборку и сохраняются как обычный текст
-
-### Конфигурация сервера (переменные окружения)
+### Конфигурация (`.env`)
 | Переменная | По умолчанию | Смысл |
 |---|---|---|
-| `HTTP_ADDR` | `:8080` | адрес прослушивания |
-| `DB_PATH` | `expenses.db` | путь к файлу SQLite |
-| `RATE_LIMIT_RPS` | `10` | запросов в секунду на клиента (`0` — выключить) |
-| `RATE_LIMIT_BURST` | `20` | размер burst-бакета |
-| `CORS_ALLOWED_ORIGINS` | `*` | список origin'ов через запятую |
-| `DEBUG` | `false` | подробное логирование |
+| `VITE_API_BASE_URL` | (пусто) | базовый URL API; пусто = same-origin (через Vite proxy) |
+| `VITE_API_PROXY_TARGET` | `http://127.0.0.1:8080` | адрес Go-бэкенда для dev-прокси |
 
-Загрузка конфигурации — `config.LoadServer()`, токен Telegram серверу не нужен.
+В dev-режиме Vite проксирует `/api/*` и `/healthz` на `VITE_API_PROXY_TARGET`, чтобы не требовать CORS на бэкенде.
 
-### Тесты
-- `internal/server/handlers_test.go` — каждый эндпоинт: успех, валидация (табличные кейсы), `404`, `400`, `405`, пагинация/фильтры, SQL-инъекции, превышение размера тела
-- `internal/server/middleware_test.go` — rate limit (burst, per-client, отключение, `429`), CORS (preflight, белый список origin'ов), recovery, security headers
-- Тесты используют `httptest` и временную SQLite БД (`t.TempDir()`), после прогона данные не остаются
-- `go vet ./...` и `go test ./...` проходят; `golang.org/x/time` переведён в прямые зависимости `go.mod`
+### API-клиент (`src/api/client.ts`)
+- **`listExpenses(filters)`** → `GET /api/v1/expenses?user_id=...&category=...&from=...&to=...&limit=...&offset=...`
+- **`createExpense(payload)`** → `POST /api/v1/expenses` (JSON-тело, возвращает созданную запись)
+- **`replaceExpense(id, payload)`** → `PUT /api/v1/expenses/{id}` (полная замена)
+- **`deleteExpense(id)`** → `DELETE /api/v1/expenses/{id}` (204 No Content)
+- **`ApiError`**: кастомный класс с `status`, `details`, `raw` для обработки ошибок бэкенда (`400`, `404`, `422`, `429`, `500`)
+- **`checkHealth()`** → `GET /healthz` (для индикатора живости, не используется в UI)
+
+### Хук `useExpenses`
+- **Состояние**: `expenses`, `loading`, `error`, `filters`, `page`, `hasMore`, `flash`
+- **Действия**: `setFilters`, `resetFilters`, `setPage`, `refresh`, `remove`
+- **Логика**:
+  - При изменении `filters` или `page` → `listExpenses()` с новыми параметрами
+  - `hasMore` = `data.length >= limit` (если бэкенд вернул меньше, значит это последняя страница)
+  - `remove(id)` → `deleteExpense(id)` → `refresh()` → flash «Трата удалена»
+  - При ошибке API → `error` с кнопкой «Повторить»
+
+### Компоненты
+- **`ConfirmDialog`**: модальное окно с фокусом на «Отмена», закрытие по Escape/клику на overlay, кнопка «Удалить» (destructive)
+- **`ExpenseForm`**: форма с валидацией (user_id > 0, amount > 0, category обязательна, spent_at обязательна, comment ≤ 500 символов), переиспользуется для создания и редактирования
+- **`ExpenseTable`**: адаптивная таблица (desktop → `<table>`, mobile → grid с `data-label`), кнопки «Изменить»/«Удалить»
+- **`Filters`**: три поля (ID, категория, период), кнопка «Сбросить» (появляется при изменении)
+- **`StatusViews`**: `Loading` (спиннер), `ErrorBanner` (красный баннер с retry), `EmptyState` (заглушка + CTA), `Flash` (всплывающее уведомление)
+
+### Сборка и запуск
+```bash
+# 1. Установить зависимости
+cd web
+npm install
+
+# 2. Запустить в dev-режиме (проксирует /api на Go-бэкенд)
+npm run dev
+# Откроется http://localhost:5173
+
+# 3. Сборка для production
+npm run build
+# Результат в dist/
+
+# 4. TypeScript-проверка без сборки
+npm run typecheck
+```
+
+### Проверки
+- ✅ `npm run build` — TypeScript компилируется без ошибок, Vite собирает `dist/`
+- ✅ `npm run typecheck` — строгая проверка типов (`strict: true`, `noUnusedLocals`, `noUnusedParameters`, `noUncheckedIndexedAccess`)
+- ✅ `npm run dev` — dev-сервер на `:5173` с прокси на `:8080`
+
+### Интеграция с бэкендом
+- Бэкенд должен быть запущен на `:8080` (или указан в `VITE_API_PROXY_TARGET`)
+- CORS на бэкенде не требуется (dev-прокси обходит)
+- Для production: собрать `dist/` и раздавать через nginx/Caddy, либо встроить в Go-сервер (`http.FileServer`)
+
+### Ограничения
+- Нет авторизации (как и требуется)
+- Нет графиков (только таблица)
+- Нет сложной архитектуры (Zustand, Redux, React Query) — только локальное состояние в хуке
+- Нет LLM-интеграции на фронте (бот работает отдельно в Telegram)
+- Нет Dockerfile/docker-compose (следующий этап)
+
