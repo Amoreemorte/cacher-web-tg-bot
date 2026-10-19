@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"expense-bot/internal/domain"
@@ -21,10 +22,32 @@ type SQLiteRepository struct {
 
 // NewSQLiteRepository открывает файл базы данных и создаёт схему, если её нет.
 func NewSQLiteRepository(dataSourceName string) (*SQLiteRepository, error) {
-	db, err := sql.Open("sqlite", dataSourceName)
+	// Параметры подключения для безопасной работы с одним файлом SQLite
+	// из нескольких процессов (api + bot) одновременно:
+	//   _journal_mode=WAL   — параллельные чтения не блокируют запись;
+	//   _busy_timeout=5000  — ждать освобождения блокировки до 5 сек;
+	//   _foreign_keys=1     — включаем поддержку внешних ключей;
+	//   _txlock=IMMEDIATE   — брать блокировку на запись сразу,
+	//                         уменьшая вероятность "database is locked".
+	// modernc.org/sqlite — чистая Go-реализация, CGO и системный SQLite не нужны.
+	sep := "?"
+	if strings.Contains(dataSourceName, "?") {
+		sep = "&"
+	}
+	dsn := fmt.Sprintf(
+		"%s%s_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=1&_txlock=IMMEDIATE",
+		dataSourceName, sep,
+	)
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+
+	// Сериализуем доступ внутри одного процесса; между процессами
+	// синхронизируется файл блокировок WAL.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	if err := db.Ping(); err != nil {
 		db.Close()
@@ -36,7 +59,7 @@ func NewSQLiteRepository(dataSourceName string) (*SQLiteRepository, error) {
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
-	log.Printf("SQLite repository initialized: %s", dataSourceName)
+	log.Printf("SQLite repository initialized: %s (WAL, busy_timeout=5s)", dataSourceName)
 	return &SQLiteRepository{db: db}, nil
 }
 

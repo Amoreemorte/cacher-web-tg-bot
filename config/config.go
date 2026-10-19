@@ -11,6 +11,7 @@ import (
 type Config struct {
 	TelegramBotToken string
 	Debug            bool
+	DBPath           string
 
 	// LLM настройки
 	LLMPrimaryURL     string
@@ -67,9 +68,15 @@ func Load() (*Config, error) {
 		}
 	}
 
+	dbPath := "expenses.db"
+	if v := os.Getenv("DB_PATH"); v != "" {
+		dbPath = v
+	}
+
 	return &Config{
 		TelegramBotToken:  token,
 		Debug:             debug,
+		DBPath:            dbPath,
 		LLMPrimaryURL:     os.Getenv("LLM_PRIMARY_URL"),
 		LLMPrimaryKey:     os.Getenv("LLM_PRIMARY_KEY"),
 		LLMPrimaryModel:   os.Getenv("LLM_PRIMARY_MODEL"),

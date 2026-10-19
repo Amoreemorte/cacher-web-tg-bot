@@ -29,8 +29,8 @@ func main() {
 
 	log.Printf("Authorized on account %s", api.Self.UserName)
 
-	// Репозиторий (SQLite)
-	repo, err := sqlite.NewSQLiteRepository("expenses.db")
+	// Репозиторий (SQLite). Путь к файлу БД берётся из конфигурации (DB_PATH).
+	repo, err := sqlite.NewSQLiteRepository(cfg.DBPath)
 	if err != nil {
 		log.Fatalf("sqlite repository error: %v", err)
 	}
